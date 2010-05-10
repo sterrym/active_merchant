@@ -2,6 +2,7 @@ module ActiveMerchant #:nodoc:
   module Billing #:nodoc:
     module BeanstreamCore
       URL = 'https://www.beanstream.com/scripts/process_transaction.asp'
+      RECURRING_URL = 'https://www.beanstream.com/scripts/recurring_billing.asp'
 
       TRANSACTIONS = {
         :authorization  => 'PA',
@@ -28,6 +29,13 @@ module ActiveMerchant #:nodoc:
         '0' => 'R',
         '5' => 'I',
         '9' => 'I'
+      }
+
+      PERIOD = {
+        :days => 'D',
+        :weeks => 'W',
+        :months => 'M',
+        :years => 'Y'
       }
       
       def self.included(base)
@@ -175,6 +183,40 @@ module ActiveMerchant #:nodoc:
         post[:accountNumber] = check.account_number
       end
       
+      def add_recurring_amount(post, money)
+        post[:amount] = amount(money)
+      end
+      
+      def add_recurring_invoice(post, options)
+        post[:rbApplyTax1] = options[:apply_tax1]
+      end
+      
+      def add_recurring_operation_type(post, operation)
+        post[:operationType] = if operation == :update
+                                 'M'
+                               elsif operation == :cancel
+                                 'C'
+                               end
+      end
+      
+      def add_recurring_service(post, options)
+        post[:serviceVersion] = '1.0'
+        post[:merchantId]     = @options[:login]
+        post[:passCode]       = @options[:pass_code]
+        post[:rbAccountId]    = options[:account_id]
+      end
+      
+      def add_recurring_type(post, options)
+        recurring_options         = options[:recurring_billing]
+        post[:trnRecurring]       = '1'
+        post[:rbBillingPeriod]    = PERIOD[recurring_options[:interval][:unit]]
+        post[:rbBillingIncrement] = recurring_options[:interval][:length]
+        post[:rbFirstBilling]     = recurring_options[:duration][:start_date].strftime("%m%d%Y")
+        post[:rbExpiry]           = (recurring_options[:duration][:start_date] >> recurring_options[:duration][:occurrences]).strftime("%m%d%Y")
+        post[:rbEndMonth]         = recurring_options[:end_of_month] if recurring_options[:end_of_month]
+        post[:rbApplyTax1]        = recurring_options[:tax1] if recurring_options[:tax1]
+      end
+      
       def parse(body)
         results = {}
         if !body.nil?
@@ -194,8 +236,32 @@ module ActiveMerchant #:nodoc:
         results
       end
       
+      def recurring_parse(data)
+        response = {}
+        xml = REXML::Document.new(data)
+        root = REXML::XPath.first(xml, "response")
+        
+        root.elements.to_a.each do |node|
+          recurring_parse_element(response, node)
+        end
+        
+        response
+      end
+      
+      def recurring_parse_element(response, node)
+        if node.has_elements?
+          node.elements.each{|e| recurring_parse_element(response, e) }
+        else
+          response[node.name.underscore.to_sym] = node.text
+        end
+      end
+      
       def commit(params)
         post(post_data(params))
+      end
+      
+      def recurring_commit(params)
+        recurring_post(post_data(params))
       end
       
       def post(data)
@@ -207,17 +273,39 @@ module ActiveMerchant #:nodoc:
           :avs_result => { :code => (AVS_CODES.include? response[:avsId]) ? AVS_CODES[response[:avsId]] : response[:avsId] }
         )
       end
-            
+      
+      def recurring_post(data)
+        response = recurring_parse(ssl_post(RECURRING_URL, data))
+        build_response(recurring_success?(response), recurring_message_from(response), response,
+          :test => test? || response[:authCode] == "TEST",
+          :authorization => recurring_authorization_from(response),
+          :cvv_result => CVD_CODES[response[:cvdId]],
+          :avs_result => { :code => (AVS_CODES.include? response[:avsId]) ? AVS_CODES[response[:avsId]] : response[:avsId] }
+        )
+      end
+      
       def authorization_from(response)
         "#{response[:trnId]};#{response[:trnAmount]};#{response[:trnType]}"
       end
-
+      
+      def recurring_authorization_from(response)
+        response[:account_id]
+      end
+      
       def message_from(response)
         response[:messageText]
       end
-
+      
+      def recurring_message_from(response)
+        response[:message]
+      end
+      
       def success?(response)
         response[:responseType] == 'R' || response[:trnApproved] == '1'
+      end
+      
+      def recurring_success?(response)
+        response[:code] == '1'
       end
       
       def add_source(post, source)

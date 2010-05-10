@@ -44,6 +44,20 @@ class RemoteBeanstreamTest < Test::Unit::TestCase
       :tax2 => 100,
       :custom => 'reference one'
     }
+    @recurring_options = @options.merge(
+      :recurring_billing => {
+        :first_billing => Date.today,
+        :end_of_month => 0,
+        :interval => {
+          :unit => :months,
+          :length => 1
+        },
+        :duration => {
+          :start_date => Date.today,
+          :occurrences => 5
+        }
+      }
+    )
   end
   
   def test_successful_visa_purchase
@@ -135,6 +149,37 @@ class RemoteBeanstreamTest < Test::Unit::TestCase
     
     assert credit = @gateway.credit(@amount, purchase.authorization)
     assert_success credit
+  end
+  
+  def test_successful_recurring
+    assert response = @gateway.recurring(@amount, @visa, @recurring_options)
+    assert_success response
+    assert response.test?
+    assert_false response.authorization.blank?
+  end
+  
+  def test_successful_update_recurring
+    assert response = @gateway.recurring(@amount, @visa, @recurring_options)
+    assert_success response
+    assert response.test?
+    assert_false response.authorization.blank?
+    
+    assert response = @gateway.update_recurring(@amount + 500, @recurring_options.merge({:account_id => response.params["rbAccountId"]}))
+    assert_success response
+    assert response.test?
+    assert_false response.authorization.blank?
+  end
+  
+  def test_successful_cancel_recurring
+    assert response = @gateway.recurring(@amount, @visa, @recurring_options)
+    assert_success response
+    assert response.test?
+    assert_false response.authorization.blank?
+    
+    assert response = @gateway.cancel_recurring(:account_id => response.params["rbAccountId"])
+    assert_success response
+    assert response.test?
+    assert_false response.authorization.blank?
   end
   
   def test_invalid_login
